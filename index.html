@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+	<title>AC Monitor</title>
+	<script type="text/javascript" src="highcharts.js"></script> <!-- <script type="text/javascript" src="https://code.highcharts.com/stock/highstock.js"></script -->
+	<script type="text/javascript" src="exporting.js"></script> <!-- <script type="text/javascript" src="https://code.highcharts.com/stock/modules/exporting.js"></script> -->
+	<script type="text/javascript" src="jquery.min.js"></script> <!-- <script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/1.8.2/jquery.min.js"></script> -->
+	<script type="text/javascript" src="boost.js"></script> <!-- <script type="text/javascript" src="https://code.highcharts.com/modules/boost.js"></script> -->
+	<script type="text/javascript" src="mqttws31.js"></script> <!-- <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.js"></script> -->
+	<script type="text/javascript"> 
+		var chart; // global variuable for chart
+		var MQTTbroker = 'test.mosquitto.org';
+		var MQTTport = 8081;
+		var MQTTsubTopic = 'voltageCurrentMonitor';
+		var status = 'Unkown';
+		var freq = 0;
+		var vRms = 0;
+		var maxPckV = 0;
+		var minPckV = 0;
+		
+		var client = new Paho.MQTT.Client(MQTTbroker, MQTTport, "ac:monitor:client:" + parseInt(Math.random() * 100, 10));
+		client.onConnectionLost = onConnectionLost;
+		client.onMessageArrived = onMessageArrived;
+		//mqtt connecton options including the mqtt broker subscriptions
+		var options = {
+			timeout: 3,
+			//userName: 'admin',
+			//password: 'admin',
+			useSSL: true,
+			onSuccess: function () {
+				console.log("MQTT connected.");
+				// Connection succeeded; subscribe to our topics
+				client.subscribe(MQTTsubTopic, {qos: 1});
+			},
+			onFailure: function (message) {
+				console.log("Connection failed, ERROR: " + message.errorMessage + ".");
+				window.setTimeout(location.reload(),5000); //wait 20seconds before trying to connect again.
+			}
+		};
+		//can be used to reconnect on connection lost
+		function onConnectionLost(responseObject) {
+			console.log("connection lost: " + responseObject.errorMessage);
+			window.setTimeout(location.reload(),20000); //wait 20seconds before trying to connect again.
+		};
+		//what is done when a message arrives from the broker
+		function onMessageArrived(message) {
+			var myEpoch;
+			var voltage;
+			var current;
+			var power;
+			var shift;
+			var plotMqtt;
+			
+			console.log(message.destinationName+":"+message.payloadString.length+':'+message.payloadString);
+			
+			//check if it is a new topic, if not add it to the array
+			if(message.payloadString.length == 2) {
+				switch (message.payloadString) {
+					case 'NE': // No Energy
+						status = 'No Energy';
+						break;
+					case 'NI': // No Internet
+						status = 'No Internet';
+						break;
+					case 'NP': // Not Plugged
+						status = 'Not Plugged';
+						break;
+					default:
+						status = 'Unkown';
+						
+				}
+			}
+			else
+			{
+				status = 'OK';
+				freq = message.payloadString.charCodeAt(1);
+				vRms = (message.payloadString.charCodeAt(2))*3.038349450410946;
+				maxPckV = (message.payloadString.charCodeAt(3)-127)*3.038349450410946;
+				minPckV = (message.payloadString.charCodeAt(4)-127)*3.038349450410946;
+				for(i = 0; i < (message.payloadString.length-4)/2 ; i++) {
+					var myEpoch = new Date().now; //get current epoch time
+					voltage = (message.payloadString.charCodeAt(i+5)-127)*3.038349450410946;
+					current = (message.payloadString.charCodeAt(i+37)-127)*0.0390625;
+					power = voltage*current;
+					shift = chart.series[0].data.length > (message.payloadString.length-4)/2 - 1;
+					plotMqtt = [myEpoch, Number(voltage)]; //create the array
+					chart.series[0].addPoint(plotMqtt, true, shift);
+					plotMqtt = [myEpoch, Number(current*100)]; //create the array
+					chart.series[1].addPoint(plotMqtt, true, shift);
+					plotMqtt = [myEpoch, Number(power)]; //create the array
+					chart.series[2].addPoint(plotMqtt, true, shift);
+					
+				};
+			}
+			chart.setTitle(null, {text: 'broker: ' + MQTTbroker + ' | port: ' + MQTTport + ' | topic : ' + MQTTsubTopic + ' | status : ' + status + '\n' + 
+				' | freq = ' + freq + ' | vRms = ' + vRms + ' | maxPcktV = ' + maxPckV + ' | minPckV = ' + minPckV});
+		};
+		//function that is called once the document has loaded
+		function init() {
+			//i find i have to set this to false if i have trouble with timezones.
+			Highcharts.setOptions({
+				global: {
+					useUTC: false
+				}
+			});
+			var voltage = {
+					id: 0,
+					name: 'voltage',
+					data: []
+			};
+			chart.addSeries(voltage); //add the series
+			var current = {
+					id: 1,
+					name: 'current',
+					data: []
+			};
+			chart.addSeries(current); //add the series
+			var power = {
+					id: 2,
+					name: 'power',
+					data: []
+			};
+			chart.addSeries(power); //add the series
+			// Connect to MQTT broker
+			client.connect(options);
+		};
+		//settings for the chart
+		$(document).ready(function() {
+			chart = new Highcharts.Chart({
+				chart: {
+					renderTo: 'container',
+					defaultSeriesType: 'spline'
+				},
+				title: {
+					text: 'Plotting Live websockets data from a MQTT topic'
+				},
+				subtitle: {
+					text: 'broker: ' + MQTTbroker + ' | port: ' + MQTTport + ' | topic : ' + MQTTsubTopic + ' | status : ' + status + 
+						' | freq = ' + freq + ' | vRms' + vRms + ' | maxPcktV = ' + maxPckV + ' | minPckV = ' + minPckV
+				},
+				xAxis: {
+					type: 'datetime',
+					tickPixelInterval: 150,
+					maxZoom: 20 * 10
+				},
+				yAxis: {
+					minPadding: 0.2,
+					maxPadding: 0.2,
+					title: {
+						text: 'Value',
+						margin: 80
+					}
+				},
+				series: []
+			});
+		});
+	</script>
+</head>
+<body>
+	<body onload="init();"><!--Start the javascript ball rolling and connect to the mqtt broker-->
+	<div id="container" style="height: 500px; min-width: 500px"></div><!-- this the placeholder for the chart-->
+</body>
+</html>
